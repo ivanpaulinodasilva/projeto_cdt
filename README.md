@@ -1,4 +1,3 @@
-
 # 🎯 Projeto Final: Sistema de Gestão para Salão de Beleza
 
 Olá! 👋 Bem-vindo ao repositório do projeto final do curso **Código_Transformação**. Este sistema foi desenvolvido para gerenciar de forma prática e automatizada a operação de um Salão de Beleza, unindo um backend robusto em Python com uma interface web leve e intuitiva.
