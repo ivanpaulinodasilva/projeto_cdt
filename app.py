@@ -1,113 +1,188 @@
-'''
-criando arquivos por flask
-'''
+from flask import Flask, render_template, request, jsonify, g
+import sqlite3
+import os
 
-from flask import Flask, render_template, request, redirect, url_for, session, flash
-
+# Inicialização padrão do Flask (já que as pastas templates e static estão no mesmo nível)
 app = Flask(__name__)
-# A secret_key é necessária para usar sessões (criptografia básica dos cookies)
-app.secret_key = 'chave_secreta_para_o_salao'
 
-# ----------------- BANCO DE DADOS EM MEMÓRIA (DADOS FIXOS) -----------------
-# Usuários cadastrados (Simulando um banco de dados)
-usuarios_db = {}
+# --- AJUSTE INTELIGENTE DO BANCO DE DADOS ---
+# Se o projeto estiver a rodar na Vercel, usa a pasta '/tmp'
+if os.environ.get('VERCEL'):
+    DATABASE = '/tmp/salao.db'
+else:
+    # Se estiver no teu PC local, cria o banco na mesma pasta raiz do app.py
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATABASE = os.path.join(BASE_DIR, 'salao.db')
+# --------------------------------------------
 
-# Dados do Salão solicitados
-CABELEIREIROS = ["Carlos", "Mariana", "Roberto"]
+# Função para conectar ao Banco de Dados
+def get_db():
+    db = getattr(g, '_database', None)
+    if db is None:
+        db = g._database = sqlite3.connect(DATABASE)
+        db.row_factory = sqlite3.Row
+    return db
 
-SERVICOS = {
-    "Corte Masculino": 45.00,
-    "Corte Feminino": 70.00,
-    "Escova / Penteado": 60.00,
-    "Coloração": 120.00,
-    "Barba Completa": 35.00
-}
+@app.teardown_appcontext
+def close_connection(exception):
+    db = getattr(g, '_database', None)
+    if db is not None:
+        db.close()
 
-DIAS_SEMANA = ["Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"]
+# Inicializar o Banco de Dados com os dados do Salão
+def init_db():
+    with app.app_context():
+        db = get_db()
+        cursor = db.cursor()
+        
+        # 1. Tabela de Clientes
+        cursor.execute('''CREATE TABLE IF NOT EXISTS clientes (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            nome TEXT NOT NULL,
+                            telefone TEXT)''')
+        
+        # 2. Tabela de Funcionários
+        cursor.execute('''CREATE TABLE IF NOT EXISTS funcionarios (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            nome TEXT NOT NULL,
+                            cargo TEXT NOT NULL)''')
+        
+        # 3. Tabela de Serviços
+        cursor.execute('''CREATE TABLE IF NOT EXISTS servicos (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            nome TEXT NOT NULL,
+                            preco REAL NOT NULL)''')
+        
+        # 4. Tabela de Produtos
+        cursor.execute('''CREATE TABLE IF NOT EXISTS produtos (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            nome TEXT NOT NULL,
+                            preco REAL NOT NULL)''')
+        
+        # 5. Tabela de Agendamentos
+        cursor.execute('''CREATE TABLE IF NOT EXISTS agendamentos (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            cliente_id INTEGER,
+                            funcionario_id INTEGER,
+                            servico_id INTEGER,
+                            dia_semana TEXT,
+                            hora TEXT,
+                            agendado_por TEXT,
+                            FOREIGN KEY(cliente_id) REFERENCES clientes(id),
+                            FOREIGN KEY(funcionario_id) REFERENCES funcionarios(id),
+                            FOREIGN KEY(servico_id) REFERENCES servicos(id))''')
 
-# ----------------- ROTAS DA APLICAÇÃO -----------------
+        # Evita duplicar os dados fixos ao reiniciar o servidor
+        cursor.execute("SELECT COUNT(*) FROM funcionarios")
+        if cursor.fetchone()[0] == 0:
+            funcionarios_iniciais = [
+                ('Andre', 'Cabeleireiro'),
+                ('Andreia', 'Cabeleireira'),
+                ('Antonio', 'Cabeleireiro'),
+                ('Andressa', 'Podóloga'),
+                ('Andrei', 'Recepcionista')
+            ]
+            cursor.executemany('INSERT INTO funcionarios (nome, cargo) VALUES (?, ?)', funcionarios_iniciais)
 
-# 1. Rota Inicial / Login e Cadastro
-@app.route('/', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        # Verifica se o clique foi no botão de cadastrar ou logar
-        acao = request.form.get('acao')
-        usuario = request.form.get('usuario').strip()
-        senha = request.form.get('senha').strip()
+            servicos_iniciais = [('Corte', 25.0), ('Pintura', 40.0), ('Tratamento Químico', 60.0)]
+            cursor.executemany('INSERT INTO servicos (nome, preco) VALUES (?, ?)', servicos_iniciais)
 
-        if not usuario or not senha:
-            flash("Por favor, preencha todos os campos.", "erro")
-            return redirect(url_for('index'))
+            produtos_iniciais = [('Shampoo', 15.0), ('Creme', 18.0), ('Máscara Capilar', 22.0)]
+            cursor.executemany('INSERT INTO produtos (nome, preco) VALUES (?, ?)', produtos_iniciais)
 
-        if acao == 'cadastrar':
-            if usuario in usuarios_db:
-                flash("Este usuário já existe! Tente outro nome.", "erro")
-            else:
-                usuarios_db[usuario] = senha
-                flash("Cadastro realizado com sucesso! Faça o login.", "sucesso")
-            return redirect(url_for('login'))
+        db.commit()
 
-        elif acao == 'index':
-            if usuario in usuarios_db and usuarios_db[usuario] == senha:
-                session['usuario_logado'] = usuario  # Salva o usuário na sessão
-                return redirect(url_for('agenda'))
-            else:
-                flash("Usuário ou senha incorretos.", "erro")
-                return redirect(url_for('index'))
+# --- ROTAS ---
 
+@app.route('/')
+def index():
     return render_template('index.html')
 
-
-# 2. Rota do Painel de Agendamento (Área Protegida)
-@app.route('/agenda', methods=['GET', 'POST'])
-def agenda():
-    # Proteção de rota: se não estiver logado, volta para o login
-    if 'usuario_logado' not in session:
-        flash("Você precisa estar logado para acessar a agenda.", "erro")
-        return redirect(url_for('index'))
-
-    if request.method == 'POST':
-        # Captura os dados selecionados no formulário
-        cabeleireiro = request.form.get('cabeleireiro')
-        servico = request.form.get('servico')
-        dia = request.form.get('dia')
-        
-        # Como o serviço vem como texto, buscamos o preço no nosso dicionário
-        preco = SERVICOS.get(servico, 0.0)
-
-        # Guarda os dados do agendamento na sessão para exibir na tela de confirmação
-        session['agendamento'] = {
-            'cabeleireiro': cabeleireiro,
-            'servico': servico,
-            'preco': preco,
-            'dia': dia
-        }
-        return redirect(url_for('confirmacao'))
-
-    # Se for GET, renderiza a página passando as listas fixas para o HTML
-    return render_template('agenda.html', 
-                           usuario=session['usuario_logado'],
-                           cabeleireiros=CABELEIREIROS, 
-                           servicos=SERVICOS, 
-                           dias=DIAS_SEMANA)
-
-
-# 3. Rota de Confirmação
-@app.route('/confirmacao')
-def confirmacao():
-    if 'usuario_logado' not in session or 'agendamento' not in session:
-        return redirect(url_for('index'))
+@app.route('/api/dados-iniciais', methods=['GET'])
+def dados_iniciais():
+    db = get_db()
+    cursor = db.cursor()
     
-    dados = session['agendamento']
-    return render_template('confirmacao.html', agendamento=dados)
+    funcionarios = cursor.execute('SELECT * FROM funcionarios').fetchall()
+    servicos = cursor.execute('SELECT * FROM servicos').fetchall()
+    produtos = cursor.execute('SELECT * FROM produtos').fetchall()
+    clientes = cursor.execute('SELECT * FROM clientes').fetchall()
+    
+    return jsonify({
+        "funcionarios": [dict(f) for f in funcionarios],
+        "servicos": [dict(s) for s in servicos],
+        "produtos": [dict(p) for p in produtos],
+        "clientes": [dict(c) for c in clientes]
+    })
 
+@app.route('/api/clientes', methods=['POST'])
+def cadastrar_cliente():
+    dados = request.json
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('INSERT INTO clientes (nome, telefone) VALUES (?, ?)', (dados['nome'], dados['telefone']))
+    db.commit()
+    return jsonify({"status": "sucesso", "mensagem": "Cliente cadastrado com sucesso!"})
 
-# 4. Rota de Logout
-@app.route('/logout')
-def logout():
-    session.clear() # Limpa a sessão do usuário
-    return redirect(url_for('index'))
+@app.route('/api/editar-preco', methods=['POST'])
+def editar_preco():
+    dados = request.json
+    tabela = dados['tabela']
+    item_id = dados['id']
+    novo_preco = dados['preco']
+    
+    if tabela not in ['servicos', 'produtos']:
+        return jsonify({"status": "erro", "mensagem": "Tabela inválida"}), 400
+        
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(f'UPDATE {tabela} SET preco = ? WHERE id = ?', (novo_preco, item_id))
+    db.commit()
+    return jsonify({"status": "sucesso", "mensagem": "Preço atualizado com sucesso!"})
+
+@app.route('/api/agendamentos', methods=['POST'])
+def criar_agendamento():
+    dados = request.json
+    dia = dados['dia_semana']
+    agendado_por = dados['agendado_por']
+    
+    dias_permitidos = ['Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo']
+    if dia not in dias_permitidos:
+        return jsonify({"status": "erro", "mensagem": "Agendamentos só são permitidos de Quarta a Domingo!"}), 400
+        
+    if agendado_por != "Recepcionista-Andrei":
+        return jsonify({"status": "erro", "mensagem": "Apenas o Recepcionista-Andrei pode efetuar agendamentos!"}), 403
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('''INSERT INTO agendamentos (cliente_id, funcionario_id, servico_id, dia_semana, hora, agendado_por) 
+                      VALUES (?, ?, ?, ?, ?, ?)''', 
+                   (dados['cliente_id'], dados['funcionario_id'], dados['servico_id'], dia, dados['hora'], agendado_por))
+    db.commit()
+    return jsonify({"status": "sucesso", "mensagem": "Agendamento realizado com sucesso!"})
+
+@app.route('/api/exportar-json', methods=['GET'])
+def exportar_json():
+    db = get_db()
+    cursor = db.cursor()
+    
+    clientes = [dict(row) for row in cursor.execute('SELECT * FROM clientes').fetchall()]
+    funcionarios = [dict(row) for row in cursor.execute('SELECT * FROM funcionarios').fetchall()]
+    servicos = [dict(row) for row in cursor.execute('SELECT * FROM servicos').fetchall()]
+    produtos = [dict(row) for row in cursor.execute('SELECT * FROM produtos').fetchall()]
+    agendamentos = [dict(row) for row in cursor.execute('SELECT * FROM agendamentos').fetchall()]
+    
+    banco_completo = {
+        "clientes": clientes,
+        "funcionarios": funcionarios,
+        "servicos": servicos,
+        "produtos": produtos,
+        "agendamentos": agendamentos
+    }
+    
+    return jsonify(banco_completo)
+
+init_db()
 
 if __name__ == '__main__':
     app.run(debug=True)
